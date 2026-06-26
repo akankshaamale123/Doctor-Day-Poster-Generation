@@ -3,9 +3,12 @@ import json
 import re
 import os
 from typing import Optional, Dict
+from dotenv import load_dotenv
 
-ENDPOINT = os.getenv("LLM_ENDPOINT", "http://3.7.220.118:5003/v1/chat/completions")
-MODEL_NAME = os.getenv("LLM_MODEL", "microsoft/Phi-3-mini-128k-instruct")
+load_dotenv()
+
+ENDPOINT = os.getenv("LLM_ENDPOINT")
+MODEL_NAME = os.getenv("LLM_MODEL")
 TEMPERATURE = 0.3
 MAX_TOKENS = 1024
 

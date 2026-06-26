@@ -1,7 +1,9 @@
 import os
 from tavily import TavilyClient
+from dotenv import load_dotenv
 
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "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")
+load_dotenv()
+TAVILY_API_KEY = os.getenv("TAVILY_KEY_URL")
 
 
 def get_reviews_from_tavily(doctor_name: str, address: str) -> str:
