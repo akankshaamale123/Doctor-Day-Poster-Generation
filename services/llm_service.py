@@ -22,7 +22,7 @@ def build_review_analysis_prompt(doctor_name: str, reviews_text: str) -> str:
   "hospital_address": "Extract the hospital or clinic address. If not found, say 'Contact for address'",
   "overall_sentiment": "Positive, Neutral, or Negative",
   "important_keywords": ["List of 3-5 main positive adjectives describing the doctor"],
-  "key_themes": ["List of main themes like 'Punctual', 'Good Listener', 'Effective Treatment'"],
+   "key_themes": ["Extract exactly 7 to 10 specific key themes describing the doctor's practice, behavior, and treatment approach. Deduce themes if not explicitly stated but strongly implied by the text."],
   "achievements": ["Extract 2-3 notable achievements (e.g., '15+ Years Experience', 'Award Winner', 'Published Researcher'). If none found, invent plausible standard medical achievements based on their specialty."],
   "professional_highlights": ["Extract 2-3 professional highlights (e.g., 'Expert in IVF', 'Advanced Laparoscopic Surgeon', 'Former Head of Department'). If none found, deduce logical highlights from the specialization."],
   "professional_summary": "A detailed 5-6 line professional summary about the doctor."

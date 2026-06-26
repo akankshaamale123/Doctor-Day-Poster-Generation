@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from werkzeug.utils import secure_filename
-
+import json
 # Models
 from models import (
     AnalyzeRequest, 
@@ -75,6 +75,14 @@ async def analyze_doctor(request: AnalyzeRequest):
         result = analyze_doctor_reviews(request.doctor_name, request.address)
         
         if result:
+            os.makedirs("output", exist_ok=True)
+
+            filename = request.doctor_name.replace(" ", "_").replace("/", "_")
+            filepath = os.path.join("output", f"{filename}.json")
+
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(result, f, indent=4, ensure_ascii=False)
+
             return {
                 "success": True,
                 "data": result
@@ -87,9 +95,11 @@ async def analyze_doctor(request: AnalyzeRequest):
                 "address": request.address
             }
             
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+    
 
 
 # ============================================
