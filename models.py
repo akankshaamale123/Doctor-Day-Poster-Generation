@@ -42,3 +42,11 @@ class ErrorResponse(BaseModel):
     """Error response model"""
     success: bool = False
     error: str
+    
+
+class ExtractByLinkRequest(BaseModel):
+    """Request model when user provides a direct link"""
+    doctor_name : str = Field(..., min_length=1, description="Doctor's Name")
+    reviews_link : str = Field(..., min_length=1, description= "Exact Google Maps or Practo profile link")
+    
+    

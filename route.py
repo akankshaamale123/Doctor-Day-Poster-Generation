@@ -6,18 +6,26 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from werkzeug.utils import secure_filename
 import json
+from services.tavily_service import get_reviews_from_tavily
+from services.llm_service import analyze_doctor_reviews
+from services.poster_service import generate_poster, POSTERS_DIR, UPLOADS_DIR
+from services.tavily_service import get_reviews_from_tavily, extract_text_from_specific_link
+import traceback
+
+
+
 # Models
 from models import (
     AnalyzeRequest, 
     AnalyzeResponse, 
     CustomDataRequest, 
+    ExtractByLinkRequest,
     HealthResponse, 
     ErrorResponse
 )
 
 # Services
-from services.llm_service import analyze_doctor_reviews
-from services.poster_service import generate_poster, POSTERS_DIR, UPLOADS_DIR
+
 
 # Config
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
@@ -101,7 +109,93 @@ async def analyze_doctor(request: AnalyzeRequest):
 
     
 
+# ============================================
+# ROUTE: Extract Full Prescription Profile from Link
+# ============================================
+@app.post("/api/extract-from-link", tags=["Data Extraction"])
+async def extract_from_link(request: ExtractByLinkRequest):
+    """
+    Extracts Doctor's Name, Specializations, and Key Important Points.
+    Specifically designed for generating doctor prescriptions.
+    """
+    try:
+        # 1. Scrape ONLY the provided link
+        raw_text = extract_text_from_specific_link(request.reviews_link)
+        
+        if not raw_text or len(raw_text) < 50:
+            raise HTTPException(
+                status_code=404, 
+                detail="Could not read data from this link. Make sure it is a public profile."
+            )
+        
+        # 2. Send to LLM with a STRICT prescription-focused prompt
+        from services.llm_service import generate_response, extract_json_from_llm
+        
+        prescription_prompt = f"""
+Read the following text extracted strictly from this link: {request.reviews_link}
+This data is exclusively for {request.doctor_name}. 
 
+Extract exactly three things for a medical prescription profile:
+1. The exact full name of the doctor.
+2. Key specializations: Specific areas of medical expertise and exact medical conditions they treat. (Provide 3 to 5 highly specific medical points).
+3. Key important points: Read the patient experiences and extract 3 to 4 standout professional qualities or practices of this specific doctor. 
+
+STRICT RULES FOR "key_important_points":
+- Phrased as professional facts, NOT as reviews.
+- ABSOLUTELY DO NOT use words like "review", "reviews", "patients say", "feedback", "rated", "according to people".
+- Example of GOOD points: "Known for highly accurate diagnostics", "Spends ample time explaining conditions to families", "Maintains a strictly hygienic and advanced clinic".
+
+Return ONLY a valid JSON object matching this exact structure:
+{{
+  "doctor_name": "Full Name",
+  "key_specializations": ["Exact Medical Specialty 1", "Expertise in Specific Surgery 2"],
+  "key_important_points": ["Standout professional quality 1", "Standout professional quality 2", "Standout professional quality 3"]
+}}
+
+Here is the text data:
+---
+{raw_text}
+---
+"""
+        llm_response = generate_response(prescription_prompt)
+        
+        if not llm_response:
+            raise HTTPException(status_code=503, detail="LLM failed to respond.")
+            
+        llm_data = extract_json_from_llm(llm_response)
+        if not llm_data:
+            raise HTTPException(status_code=500, detail="LLM returned invalid JSON.")
+        
+        # 3. Build the final clean data for the prescription (how_doctor_helps REMOVED)
+        clean_data = {
+            "doctor_name": llm_data.get("doctor_name", request.doctor_name),
+            "key_specializations": llm_data.get("key_specializations", ["General Physician"]),
+            "key_important_points": llm_data.get("key_important_points", ["Dedicated to patient well-being"])
+        }
+        
+        # 4. Save to local folder
+        save_folder = "extracted_data"
+        os.makedirs(save_folder, exist_ok=True)
+        filename = request.doctor_name.replace(" ", "_").replace("/", "_")
+        filepath = os.path.join(save_folder, f"{filename}_prescription_data.json")
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(clean_data, f, indent=4, ensure_ascii=False)
+        
+        return {
+            "success": True,
+            "data": clean_data,
+            "saved_to": filepath
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_traceback = traceback.format_exc()
+        print(f"❌ FULL TRACEBACK:\n{error_traceback}")
+        raise HTTPException(status_code=500, detail={"error_message": str(e), "traceback": error_traceback})
+    
 # ============================================
 # ROUTE 4: Upload Photo + Poster - CLEAN VERSION
 # ============================================
@@ -228,3 +322,5 @@ async def delete_poster(filename: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+    
