@@ -9,7 +9,8 @@ import json
 from services.tavily_service import get_reviews_from_tavily
 from services.llm_service import analyze_doctor_reviews
 from services.poster_service import generate_poster, POSTERS_DIR, UPLOADS_DIR
-from services.tavily_service import get_reviews_from_tavily, extract_text_from_specific_link
+from services.llm_service import generate_response, extract_json_from_llm
+from services.tavily_service import extract_text_from_specific_link
 import traceback
 
 
@@ -129,7 +130,7 @@ async def extract_from_link(request: ExtractByLinkRequest):
             )
         
         # 2. Send to LLM with a STRICT prescription-focused prompt
-        from services.llm_service import generate_response, extract_json_from_llm
+       
         
         prescription_prompt = f"""
 Read the following text extracted strictly from this link: {request.reviews_link}
@@ -170,7 +171,8 @@ Here is the text data:
         clean_data = {
             "doctor_name": llm_data.get("doctor_name", request.doctor_name),
             "key_specializations": llm_data.get("key_specializations", ["General Physician"]),
-            "key_important_points": llm_data.get("key_important_points", ["Dedicated to patient well-being"])
+            "key_important_points": llm_data.get("key_important_points", ["Dedicated to patient well-being"]),
+            "google_review_link" : request.reviews_link
         }
         
         # 4. Save to local folder
