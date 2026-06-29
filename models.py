@@ -49,4 +49,18 @@ class ExtractByLinkRequest(BaseModel):
     doctor_name : str = Field(..., min_length=1, description="Doctor's Name")
     reviews_link : str = Field(..., min_length=1, description= "Exact Google Maps or Practo profile link")
     
-    
+class QuizPrescriptionInput(BaseModel):
+    """
+    Data sent by the Quiz module after doctor completes the quiz.
+    Only doctor_name and review_link are needed — everything else is auto-extracted.
+    """
+    doctor_name: str = Field(
+        ...,
+        description = "Doctor full name",
+        example     = "Dr. Anil Sawarkar",
+    )
+    review_link: str = Field(
+        ...,
+        description = "Doctor profile URL (Google Maps / Practo) from quiz registration",
+        example     = "https://www.google.com/search?q=Dr.+Anil+Sawarkar+Amravati+reviews",
+    )

@@ -1,6 +1,7 @@
 import os, re
 from tavily import TavilyClient
 from dotenv import load_dotenv
+from bs4 import BeautifulSoup
 
 load_dotenv()
 TAVILY_API_KEY = os.getenv("TAVILY_KEY_URL")
@@ -41,6 +42,46 @@ def get_reviews_from_tavily(doctor_name: str, address: str) -> str:
         extracted_text += "---\n"
         
     return extracted_text
+
+def clean_text_for_llm(raw_text: str, max_chars: int = 8000) -> str:
+    """
+    Strips HTML, scripts, styles, and noise from raw scraped text.
+    Truncates to fit within LLM token limits.
+    """
+    # 1. Remove HTML tags using BeautifulSoup
+    try:
+        soup = BeautifulSoup(raw_text, "html.parser")
+        
+        # Remove script, style, noscript tags entirely
+        for tag in soup(["script", "style", "noscript", "meta", "link", "head"]):
+            tag.decompose()
+        
+        text = soup.get_text(separator=" ")
+    except Exception:
+        # Fallback: strip HTML tags with regex if BeautifulSoup fails
+        text = re.sub(r'<[^>]+>', ' ', raw_text)
+    
+    # 2. Remove base64 encoded data (massive blobs like images)
+    text = re.sub(r'base64,[A-Za-z0-9+/=]{100,}', '', text)
+    
+    # 3. Remove URLs
+    text = re.sub(r'https?://\S+', '', text)
+    
+    # 4. Remove excessive whitespace, newlines, tabs
+    text = re.sub(r'[\t\r\n]+', ' ', text)
+    text = re.sub(r' {2,}', ' ', text)
+    
+    # 5. Remove non-printable / special characters
+    text = re.sub(r'[^\x20-\x7E\u00A0-\uFFFF]', '', text)
+    
+    # 6. Truncate to max_chars to stay within token limit
+    # ~4 chars per token, so 8000 chars ≈ 2000 tokens (leaves room for prompt)
+    text = text.strip()
+    if len(text) > max_chars:
+        text = text[:max_chars] + "... [truncated]"
+    
+    print("🙄🙄" , text)
+    return text 
 
 
 def extract_text_from_specific_link(url: str) -> str:

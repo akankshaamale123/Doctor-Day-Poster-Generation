@@ -3,18 +3,22 @@ import uuid
 from typing import Optional
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
-from werkzeug.utils import secure_filename
+from fastapi import UploadFile, File, Form, Request
+from fastapi.responses import FileResponse, JSONResponse , Response
 import json
 from services.tavily_service import get_reviews_from_tavily
 from services.llm_service import analyze_doctor_reviews
 from services.poster_service import generate_poster, POSTERS_DIR, UPLOADS_DIR
 from services.llm_service import generate_response, extract_json_from_llm
 from services.tavily_service import extract_text_from_specific_link
+from prescription.utils     import make_reg_no, today, display_name
 import traceback
-
-
-
+from fastapi import HTTPException
+from prescription.generator import generate_content
+from prescription.renderer  import render
+from prescription.config import TEMPLATE_FILE
+from services.tavily_service import clean_text_for_llm
+from fastapi.staticfiles import StaticFiles
 # Models
 from models import (
     AnalyzeRequest, 
@@ -22,14 +26,14 @@ from models import (
     CustomDataRequest, 
     ExtractByLinkRequest,
     HealthResponse, 
-    ErrorResponse
+    ErrorResponse ,
+    QuizPrescriptionInput
 )
 
 # Services
 
 
-# Config
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'webp'}
+
 
 # Create directories
 os.makedirs(UPLOADS_DIR, exist_ok=True)
@@ -44,6 +48,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 # Enable CORS
 app.add_middleware(
     CORSMiddleware,
@@ -73,20 +78,50 @@ async def health_check():
 
 
 # ============================================
-# ROUTE 2: Analyze Doctor Reviews - CLEAN VERSION
+# ROUTE 2: Analyze Doctor Reviews + Photo Upload
 # ============================================
 @app.post("/api/analyze", tags=["Analysis"])
-async def analyze_doctor(request: AnalyzeRequest):
-    """
-    Analyze doctor reviews and return structured JSON data.
-    """
+async def analyze_doctor(
+    request: Request,  # <-- ADDED THIS
+    doctor_name: str = Form(..., description="Doctor's full name"),
+    address: str = Form(default="", description="City or location"),
+    photo: UploadFile = File(None, description="Doctor's photo (optional)")
+):
+    saved_photo_path = None
+    unique_filename = None
+    
     try:
-        result = analyze_doctor_reviews(request.doctor_name, request.address)
+        # 1. Handle Photo Upload
+        if photo and photo.filename:
+            os.makedirs("uploads", exist_ok=True)
+            
+            file_extension = photo.filename.rsplit('.', 1)[-1].lower()
+            if file_extension not in ['png', 'jpg', 'jpeg', 'webp']:
+                raise HTTPException(status_code=400, detail="Invalid image format.")
+            
+            unique_filename = f"{uuid.uuid4()}.{file_extension}"
+            saved_photo_path = os.path.join("uploads", unique_filename)
+            
+            contents = await photo.read()
+            with open(saved_photo_path, "wb") as f:
+                f.write(contents)
+            print(f"📸 Photo saved to {saved_photo_path}")
+        
+        # 2. Analyze Reviews
+        result = analyze_doctor_reviews(doctor_name, address)
         
         if result:
+            # 3. Build the FULL clickable URL for the photo
+            photo_url = None
+            if unique_filename:
+                photo_url = f"{request.base_url}uploads/{unique_filename}"
+            
+            # Add it to your JSON response
+            result["photo_url"] = photo_url
+            
+            # 4. Save JSON locally
             os.makedirs("output", exist_ok=True)
-
-            filename = request.doctor_name.replace(" ", "_").replace("/", "_")
+            filename = doctor_name.replace(" ", "_").replace("/", "_")
             filepath = os.path.join("output", f"{filename}.json")
 
             with open(filepath, "w", encoding="utf-8") as f:
@@ -99,16 +134,18 @@ async def analyze_doctor(request: AnalyzeRequest):
         else:
             return {
                 "success": False,
-                "error": "Could not analyze reviews. Not enough data found.",
-                "doctor_name": request.doctor_name,
-                "address": request.address
+                "error": "Could not analyze reviews.",
+                "doctor_name": doctor_name
             }
             
-        
+    except HTTPException:
+        if saved_photo_path and os.path.exists(saved_photo_path):
+            os.remove(saved_photo_path)
+        raise
     except Exception as e:
+        if saved_photo_path and os.path.exists(saved_photo_path):
+            os.remove(saved_photo_path)
         raise HTTPException(status_code=500, detail=str(e))
-
-    
 
 # ============================================
 # ROUTE: Extract Full Prescription Profile from Link
@@ -123,6 +160,21 @@ async def extract_from_link(request: ExtractByLinkRequest):
         # 1. Scrape ONLY the provided link
         raw_text = extract_text_from_specific_link(request.reviews_link)
         
+        
+        # ✅ Clean it before sending to LLM
+        raw_text = clean_text_for_llm(raw_text, max_chars=8000)
+        
+        print(raw_text)
+        print(f"📄 Cleaned text length: {len(raw_text)} chars")
+
+        if not raw_text or len(raw_text) < 50:
+            raise HTTPException(
+                status_code=404,
+                detail="Could not read data from this link. Make sure it is a public profile."
+            )
+        
+        
+        print(raw_text)
         if not raw_text or len(raw_text) < 50:
             raise HTTPException(
                 status_code=404, 
@@ -159,12 +211,16 @@ Here is the text data:
 ---
 """
         llm_response = generate_response(prescription_prompt)
-        
-        if not llm_response:
+        print(llm_response)
+        if not llm_response: 
+            import traceback
+            traceback.print_exc()
             raise HTTPException(status_code=503, detail="LLM failed to respond.")
             
         llm_data = extract_json_from_llm(llm_response)
         if not llm_data:
+            import traceback
+            traceback.print_exc()
             raise HTTPException(status_code=500, detail="LLM returned invalid JSON.")
         
         # 3. Build the final clean data for the prescription (how_doctor_helps REMOVED)
@@ -184,11 +240,125 @@ Here is the text data:
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(clean_data, f, indent=4, ensure_ascii=False)
         
-        return {
-            "success": True,
-            "data": clean_data,
-            "saved_to": filepath
-        }
+        # return {
+        #     "success": True,
+        #     "data": clean_data,
+        #     "saved_to": filepath
+        # }
+        
+        # 2. Scrape the review link received from quiz
+        print(f"🔗 Scraping review link: {request.reviews_link}")
+        raw_text = extract_text_from_specific_link(request.reviews_link)
+
+        # 3. Extract specialization + key highlights from scraped text via LLM
+        specialty    = "General Physician"   # fallback
+        highlights   = []
+
+        if raw_text and len(raw_text) > 50:
+            extraction_prompt = f"""
+    Read the following text about {request.doctor_name} extracted from: {request.reviews_link}
+
+    Extract:
+    1. doctor_name: The full name of the doctor
+    2. specialization: {clean_data.get("key_specializations")}
+    3. key_important_points: {clean_data.get("key_important_points")}
+
+    STRICT RULES:
+    - specialization must be a single short string like "Dermatologist" or "IVF Specialist"
+    - key_important_points must be professional facts — do NOT use words like "reviews", "patients say", "rated"
+    - Return ONLY valid JSON, no markdown, no explanation
+
+    Return ONLY this JSON:
+    {{
+    "doctor_name": "{request.doctor_name}",
+    "specialization": "Primary specialization here",
+    "key_important_points": ["Professional quality 1", "Professional quality 2"]
+    }}
+
+    Text:
+    ---
+    {raw_text[:3000]}
+    ---
+    """
+            llm_response = generate_response(extraction_prompt)
+            if llm_response:
+                extracted = extract_json_from_llm(llm_response)
+                if extracted:
+                    specialty  = extracted.get("specialization", specialty)
+                    highlights = extracted.get("key_important_points", [])
+                    print(f"✅ Extracted: {specialty} | highlights: {highlights}")
+
+        # 4. Prepare prescription inputs
+        clean_name = display_name(request.doctor_name)
+        reg_no     = make_reg_no(specialty)
+        date_str   = today()
+
+        # Build awards string from top highlight
+        awards_str = highlights[0] if highlights else None
+
+        # QR code links to the review URL sent by quiz
+        google_link = request.reviews_link
+
+        # 5. Check template exists
+        if not os.path.exists(TEMPLATE_FILE):
+            raise HTTPException(
+                status_code = 404,
+                detail      = (
+                    f"Prescription template not found: {TEMPLATE_FILE}. "
+                    "Ensure templates/pads/medrite.png exists."
+                ),
+            )
+
+        
+        try:
+            content = generate_content(
+                doctor_name    = clean_name,
+                specialty      = specialty,
+                years_exp      = None,
+                awards         = awards_str,
+            )
+        except Exception as e: 
+            traceback.print_exc()
+            msg = str(e)
+            if "401" in msg or "invalid" in msg.lower() or "api_key" in msg.lower(): 
+                
+                raise HTTPException(
+                    status_code = 401,
+                    detail      = "Invalid Gemini API key. Get a free key at aistudio.google.com",
+                )
+            if "429" in msg or "quota" in msg.lower() or "rate" in msg.lower():
+                raise HTTPException(
+                    status_code = 429,
+                    detail      = "Gemini quota exceeded. Wait a moment and retry.",
+                ) 
+            
+            traceback.print_exc()
+            raise HTTPException(status_code=502, detail=f"Gemini error: {msg}")
+
+        # 7. Render PNG
+        try:
+            png_bytes = render(
+                content            = content,
+                doctor_name        = clean_name,
+                specialty          = specialty,
+                reg_no             = reg_no,
+                date_str           = date_str,
+                google_profile_url = google_link,
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Render error: {str(e)}")
+
+        # 8. Return PNG
+        safe_name = clean_name.lower().replace(" ", "-")
+        return Response(
+            content    = png_bytes,
+            media_type = "image/png",
+            headers    = {
+                "Content-Disposition": f'attachment; filename="prescription-{safe_name}.png"',
+                "X-Specialization":    specialty,
+                "X-Review-Link-Used":  request.reviews_link,
+            },
+        )
 
     except HTTPException:
         raise
@@ -326,3 +496,143 @@ async def delete_poster(filename: str):
         raise HTTPException(status_code=500, detail=str(e))
     
     
+
+
+@app.post(
+    "/api/generate-from-quiz",
+    tags           = ["generate prescription"],   # groups under Poster Generation in Swagger
+    
+)  
+def generate_prescription_from_quiz(data: QuizPrescriptionInput):
+    """
+    **Generate a Prescription for Happiness from Quiz Result.**
+
+    Quiz sends doctor_name + review_link.
+    This route scrapes the review link, extracts specialization + highlights via LLM,
+    then calls Gemini to generate a heartfelt prescription and returns a PNG.
+
+    ### What the Quiz module should POST:
+    ```json
+    {
+      "doctor_name": "Dr. Anil Sawarkar",
+      "review_link": "https://www.google.com/search?q=Dr.+Anil+Sawarkar+reviews"
+    }
+    ```
+    """
+
+
+    # 2. Scrape the review link received from quiz
+    print(f"🔗 Scraping review link: {data.review_link}")
+    raw_text = extract_text_from_specific_link(data.review_link)
+
+    # 3. Extract specialization + key highlights from scraped text via LLM
+    specialty    = "General Physician"   # fallback
+    highlights   = []
+
+    if raw_text and len(raw_text) > 50:
+        extraction_prompt = f"""
+Read the following text about {data.doctor_name} extracted from: {data.review_link}
+
+Extract:
+1. doctor_name: The full name of the doctor
+2. specialization: Their primary medical specialization (single string, e.g. "Cardiologist")
+3. key_important_points: 2-3 standout professional qualities (facts, not reviews)
+
+STRICT RULES:
+- specialization must be a single short string like "Dermatologist" or "IVF Specialist"
+- key_important_points must be professional facts — do NOT use words like "reviews", "patients say", "rated"
+- Return ONLY valid JSON, no markdown, no explanation
+
+Return ONLY this JSON:
+{{
+  "doctor_name": "{data.doctor_name}",
+  "specialization": "Primary specialization here",
+  "key_important_points": ["Professional quality 1", "Professional quality 2"]
+}}
+
+Text:
+---
+{raw_text[:3000]}
+---
+"""
+        llm_response = generate_response(extraction_prompt)
+        if llm_response:
+            extracted = extract_json_from_llm(llm_response)
+            if extracted:
+                specialty  = extracted.get("specialization", specialty)
+                highlights = extracted.get("key_important_points", [])
+                print(f"✅ Extracted: {specialty} | highlights: {highlights}")
+
+    # 4. Prepare prescription inputs
+    clean_name = display_name(data.doctor_name)
+    reg_no     = make_reg_no(specialty)
+    date_str   = today()
+
+    # Build awards string from top highlight
+    awards_str = highlights[0] if highlights else None
+
+    # QR code links to the review URL sent by quiz
+    google_link = data.review_link
+
+    # 5. Check template exists
+    if not os.path.exists(TEMPLATE_FILE):
+        raise HTTPException(
+            status_code = 404,
+            detail      = (
+                f"Prescription template not found: {TEMPLATE_FILE}. "
+                "Ensure templates/pads/medrite.png exists."
+            ),
+        )
+
+    
+    try:
+        content = generate_content(
+            doctor_name    = clean_name,
+            specialty      = specialty,
+            years_exp      = None,
+            awards         = awards_str,
+        )
+    except Exception as e: 
+        traceback.print_exc()
+        msg = str(e)
+        if "401" in msg or "invalid" in msg.lower() or "api_key" in msg.lower(): 
+            
+            raise HTTPException(
+                status_code = 401,
+                detail      = "Invalid Gemini API key. Get a free key at aistudio.google.com",
+            )
+        if "429" in msg or "quota" in msg.lower() or "rate" in msg.lower():
+            raise HTTPException(
+                status_code = 429,
+                detail      = "Gemini quota exceeded. Wait a moment and retry.",
+            ) 
+        
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"Gemini error: {msg}")
+
+    # 7. Render PNG
+    try:
+        png_bytes = render(
+            content            = content,
+            doctor_name        = clean_name,
+            specialty          = specialty,
+            reg_no             = reg_no,
+            date_str           = date_str,
+            google_profile_url = google_link,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Render error: {str(e)}")
+
+    # 8. Return PNG
+    safe_name = clean_name.lower().replace(" ", "-")
+    return Response(
+        content    = png_bytes,
+        media_type = "image/png",
+        headers    = {
+            "Content-Disposition": f'attachment; filename="prescription-{safe_name}.png"',
+            "X-Specialization":    specialty,
+            "X-Review-Link-Used":  data.review_link,
+        },
+    )
+
+

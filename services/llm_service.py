@@ -10,7 +10,7 @@ load_dotenv()
 ENDPOINT = os.getenv("LLM_ENDPOINT")
 MODEL_NAME = os.getenv("LLM_MODEL")
 TEMPERATURE = 0.3
-MAX_TOKENS = 1024
+MAX_TOKENS = 2048
 
 
 def build_review_analysis_prompt(doctor_name: str, reviews_text: str) -> str:
@@ -71,11 +71,15 @@ def generate_response(user_query: str) -> Optional[str]:
 
     try:
         print(f"📤 Sending to LLM: {MODEL_NAME}")
-        response = requests.post(url=ENDPOINT, json=payload, timeout=60)
+        response = requests.post(url=ENDPOINT, json=payload, timeout=60) 
+        
+        
+        
         response.raise_for_status()
         result = response.json()
         content = result["choices"][0]["message"]["content"]
-        print(f"📥 LLM replied ({len(content)} chars)")
+        print(f"📥 LLM replied ({len(content)} chars)") 
+        
         return content.strip()
 
     except requests.exceptions.ConnectionError:
@@ -84,7 +88,9 @@ def generate_response(user_query: str) -> Optional[str]:
     except requests.exceptions.Timeout:
         print("❌ LLM request timed out")
         return None
-    except requests.exceptions.HTTPError as e:
+    except requests.exceptions.HTTPError as e: 
+        import traceback 
+        traceback.print_exc()
         print(f"❌ LLM HTTP error: {e.response.status_code}")
         return None
     except Exception as e:
